@@ -11,13 +11,17 @@ Las tareas del frontend están en el LOGS.md de [EA-Seminari7-JWT-WebSockets-Fro
 
 Lo que backend y frontend tienen que cumplir igual. Si algo de aquí cambia, se cambia en los dos LOGS.md.
 
-- **Rutas públicas**: `POST /auth/register` y `POST /auth/login`. `POST /auth/refresh` se autentica con su propio refresh token. `GET /ping` y la documentación (`/api-docs`) también son públicas.
-  Todo lo demás exige token.
+- **Rutas públicas**: `POST /auth/register` y `POST /auth/login`. `POST /auth/refresh` y `POST /auth/logout` se autentican con la cookie del refresh token. `GET /ping` y la documentación
+  (`/api-docs`) también son públicas. Todo lo demás exige token.
 - **Registro**: el cuerpo es `{ name, email, password }` (contraseña de 8 caracteres como mínimo; `role` no se acepta, todo usuario nuevo es `user`). Responde 201 con `{ user }` y **sin token**, 409
   si el email ya existe o 422 si el cuerpo no es válido. El frontend redirige entonces a la página de login.
-- **Login**: el cuerpo es `{ email, password }`. Responde `{ token, refreshToken, user }` o 401. `user` es `{ _id, name, email, role, createdAt, updatedAt }`, sin contraseña.
-- **Refresh**: el cuerpo es `{ refreshToken }`. Responde `{ token }` (un access token nuevo) o 401 si el refresh token ha caducado o no es válido. El refresh token no cambia.
+- **Login**: el cuerpo es `{ email, password }`. Responde `{ token, user }` o 401. `user` es `{ _id, name, email, role, createdAt, updatedAt }`, sin contraseña. El refresh token **no va en el
+  JSON**: se deja en la cookie `refreshToken` (HttpOnly, SameSite=Strict, Path=/auth, Max-Age de 7 días; Secure en producción).
+- **Refresh**: sin cuerpo. Lee el refresh token de la cookie y responde `{ token }` (un access token nuevo), o 401 si no hay cookie, ha caducado o no es válida. El refresh token no cambia.
+- **Logout**: sin cuerpo. Borra la cookie y responde 204. Después, `/auth/refresh` responde 401.
+- **Cookies y CORS**: el frontend llama a `/auth/*` con `withCredentials: true`; el backend responde con `Access-Control-Allow-Credentials: true` y el origen exacto de `CORS_ORIGIN` (no vale `*`).
 - **Token**: se envía en la cabecera `Authorization: Bearer <token>`. Su payload lleva los claims `sub` (id del usuario), `role` y `exp`. El access token dura 15 minutos y el refresh token 7 días.
+  El frontend guarda el access token solo en memoria (una signal), nunca en `localStorage` ni `sessionStorage`; al recargar la página lo recupera llamando a `/auth/refresh` y después a `/users/me`.
 - **Errores de autenticación**: 401 si falta el token, ha caducado (`{ message: 'El token ha caducado' }`) o no es válido (`{ message: 'Token no válido' }`); 403 si hay sesión pero no el rol
   necesario.
 - **Roles**: el CRUD del backoffice (autores y libros) es solo para `admin`. El chat es para todos los usuarios con sesión iniciada.
@@ -36,6 +40,8 @@ Lo que backend y frontend tienen que cumplir igual. Si algo de aquí cambia, se 
     escribió), `chat:error` con `{ message }` y `users:online` (a todos, cada vez que alguien abre o cierra el chat: la lista de ids de los usuarios conectados).
   - Un mensaje es `{ _id, room, user: { _id, name }, text, timestamp }`.
   - `GET /users` (con sesión, cualquier rol) responde `{ users: [{ _id, name }] }`, ordenados por nombre, para elegir con quién hablar en el chat directo.
+- **Avisos del backoffice** (socket.io, no son chat): cuando un admin crea, edita o borra un libro o un autor, el servidor emite a todos los conectados `books:changed` o `authors:changed` con
+  `{ action: 'created' | 'updated' | 'deleted', id, name, userId }` (`name` es el título del libro o el nombre del autor; `userId`, quién lo ha hecho). El cliente no envía nada: solo escucha.
 - **Usuario con sesión**: `GET /users/me` (con sesión, cualquier rol) responde `{ user: { _id, name, email, role } }`, a partir del token (`req.user`).
 
 ## Tareas
@@ -80,6 +86,13 @@ el servidor lo emite a los demás.
 - [x] `GET /authors` y `GET /books` con `?page=&limit=` (por defecto 1 y 5): `skip` y `limit` más `countDocuments`, y la respuesta con `total`, `page` y `pages`
 - [x] Validar `page` y `limit` con Joi
 - [x] Actualizar Swagger y, si hace falta más volumen para probar, ampliar el seed
+
+### Ejercicio del seminario 7: tokens seguros y más eventos de socket
+
+- [x] Refresh token en una cookie HttpOnly, SameSite=Strict, Path=/auth, con la misma duración que el token y Secure en producción; fuera del JSON del login
+- [x] `POST /auth/refresh` lee la cookie (401 sin cookie o con una no válida) y `POST /auth/logout` la borra
+- [x] CORS con `credentials: true` y el origen exacto del frontend
+- [x] Eventos de socket.io que no son chat: `books:changed` y `authors:changed`
 
 ### Extra opcional
 
@@ -191,3 +204,25 @@ Revisión de un profesor sobre el código del backend:
 - El comportamiento de la API no cambia. Validación: `npm run build` y `npm run lint` sin errores; 35 pruebas con curl (las diez rutas de autores y libros dan 401 sin token y 403
   como `user`; como `admin`, 200, y la validación se ejecuta después de la autenticación; `/users` y `/users/me` con y sin token, y `/users/me` devuelve el usuario de cada token)
   y 6 pruebas del chat con `socket.io-client` (autenticación, `users:online`, mensajes y directo ajeno bloqueado).
+
+### 2026-10-19 · Ejercicio del seminario 7: refresh token en cookie HttpOnly y avisos por socket
+
+- Problema de partida: el login devolvía los dos tokens en el JSON y el frontend los guardaba en `localStorage`. Cualquier script inyectado en la página (XSS) podía leerlos, incluido el
+  refresh token, que sirve para conseguir access tokens nuevos durante 7 días.
+- Ahora `POST /auth/login` responde `{ token, user }` y deja el refresh token en la cookie `refreshToken` con `httpOnly`, `sameSite: 'strict'`, `path: '/auth'`, `maxAge` igual a
+  `JWT_REFRESH_EXPIRES_IN` (convertido a milisegundos con la librería `ms`, la misma que usa jsonwebtoken) y `secure` solo cuando `NODE_ENV=production`. Las opciones están en una sola
+  función del controller, `refreshCookieOptions()`, para que login y logout usen exactamente las mismas: si `path` no coincide, el navegador no borra la cookie.
+- `POST /auth/refresh` ya no valida body con Joi: lee `req.cookies.refreshToken` (middleware `cookie-parser`). Sin cookie responde 401 "Falta el refresh token"; con una cookie caducada o
+  falsa, `jwt.verify` lanza y el `ErrorHandler` responde 401 como antes. `POST /auth/logout` (nueva) hace `clearCookie` y responde 204.
+- CORS: `credentials: true` y `CORS_ORIGIN` pasa a ser por defecto `http://localhost:4200`; con credenciales el navegador no acepta `*`. Variable nueva `NODE_ENV` en `.env.example`.
+- `AuthService` no cambia: sigue firmando los dos tokens; es el controller quien decide que uno va en el JSON y el otro en la cookie.
+- Swagger: desaparece `RefreshInput`, se añade el esquema de seguridad `refreshCookie` (cookie) para refresh y logout, y la respuesta del login ya no lleva `refreshToken`.
+- Eventos de socket.io que no son chat (`sockets/Notifications.ts`): los controllers de libros y autores, después de responder, llaman a `notifyBooksChanged` o `notifyAuthorsChanged`,
+  que hacen `io.emit('books:changed' | 'authors:changed', { action, id, name, userId })` a todos los conectados. `StartNotifications(io)` recibe el servidor que crea `StartChat`.
+  Tipos añadidos a `ServerToClientEvents` (`BackofficeChange`).
+- Validación ejecutada: `npm run build` y `npm run lint` sin errores. Con la API arrancada contra MongoDB, pruebas con curl: el login responde `Set-Cookie: refreshToken=...; Max-Age=604800;
+  Path=/auth; HttpOnly; SameSite=Strict` y `Access-Control-Allow-Credentials: true`, y el JSON solo trae `token` y `user`; refresh con cookie 200; sin cookie, con cookie falsa o con el token en
+  el body 401; logout 204 con la cookie vaciada y refresh después 401; el preflight CORS desde otro origen no devuelve ese origen. Con `socket.io-client` desde Node, un `user` conectado recibe
+  `books:changed` al crear y borrar un libro y `authors:changed` al editar un autor. La prueba en navegador está en la bitácora del frontend.
+- Prompt de IA usado: «Resolver el ejercicio del seminario 7 (PDF): refresh token en cookie HttpOnly y SameSite=Strict solo para /auth, access token solo en memoria, CORS con credenciales,
+  y añadir eventos de socket.io que no sean de chat. Hacerlo sencillo, al estilo del resto del proyecto».

@@ -9,7 +9,7 @@ Este repositorio parte del backend del Seminario 6, que a su vez venía del Semi
 dos cambios respecto al S5: la descripción de los libros y el borrado lógico (ver
 [Soft delete](#soft-delete)). Sobre esa base, el equipo añade en este seminario:
 
-- Autenticación con JWT: registro, login, refresh y rutas protegidas por rol
+- Autenticación con JWT: registro, login, refresh (con el refresh token en una cookie HttpOnly), logout y rutas protegidas por rol
 - Paginación en el servidor de los listados de autores y libros
 - Extra: chat con WebSockets (socket.io) con los mensajes guardados en MongoDB
 
@@ -79,7 +79,8 @@ cp .env.example .env
 |---|---|---|
 | `MONGO_URL` | Dirección de tu MongoDB | `mongodb://127.0.0.1:27017/seminari7` |
 | `SERVER_PORT` | Puerto en el que escucha la API | `1337` |
-| `CORS_ORIGIN` | Desde qué dirección se puede llamar a la API desde un navegador | `*` (cualquiera) |
+| `CORS_ORIGIN` | Origen exacto del frontend (con cookies no vale `*`) | `http://localhost:4200` |
+| `NODE_ENV` | Con `production`, la cookie del refresh token se marca `Secure` (solo HTTPS) | `development` |
 | `JWT_SECRET` | Secreto con el que se firma el access token. **Obligatoria** | valor de clase en `.env.example` |
 | `JWT_REFRESH_SECRET` | Secreto con el que se firma el refresh token; distinto del anterior. **Obligatoria** | valor de clase en `.env.example` |
 | `JWT_EXPIRES_IN` | Cuánto dura el access token | `15m` (15 minutos) |
@@ -230,8 +231,9 @@ src/
     User.ts          Usuario, y las interfaces de los tokens (payload) y de req.user
     Message.ts       Mensaje del chat, y las interfaces de los eventos de Socket.IO
     Author.ts, Book.ts
-  sockets/         El chat: socket.io y sus eventos
+  sockets/         socket.io: el chat y los avisos del backoffice
     Chat.ts          Salas, historial y envío de mensajes
+    Notifications.ts Eventos books:changed y authors:changed, que emiten los controllers
   utils/           Funciones pequeñas sin dependencias de Express
     password.ts      Cifra y comprueba contraseñas con scrypt
 ```
@@ -257,17 +259,36 @@ El recorrido completo:
 
 1. `POST /auth/register` con `{ name, email, password }` crea el usuario (siempre con el rol `user`)
    y responde 201 **sin token**. El frontend lleva entonces a la página de login.
-2. `POST /auth/login` con `{ email, password }` responde `{ token, refreshToken, user }`, o 401 si el
-   email o la contraseña no son correctos (el mismo mensaje en los dos casos, para no revelar qué
-   emails están registrados).
+2. `POST /auth/login` con `{ email, password }` responde `{ token, user }`, o 401 si el email o la
+   contraseña no son correctos (el mismo mensaje en los dos casos, para no revelar qué emails están
+   registrados). El refresh token no va en el JSON: se deja en una **cookie HttpOnly** (ver más abajo).
 3. En cada petición a una ruta protegida, el cliente envía el token en la cabecera:
    `Authorization: Bearer <token>`.
 4. El middleware `VerifyToken` comprueba la firma y la caducidad, y deja el usuario en `req.user`.
    Si falta el token, ha caducado o no es válido, responde 401.
 5. El middleware `RequireRole('admin')` comprueba el rol: si el usuario no es `admin`, responde 403.
-6. El access token dura poco (15 minutos). Cuando caduca, el cliente envía el refresh token a
-   `POST /auth/refresh` con `{ refreshToken }` y recibe `{ token }`, un access token nuevo, sin
+6. El access token dura poco (15 minutos). Cuando caduca, el cliente llama a `POST /auth/refresh`
+   sin body: el navegador adjunta la cookie y la API responde `{ token }`, un access token nuevo, sin
    volver a escribir la contraseña. El refresh token dura 7 días.
+7. `POST /auth/logout` borra la cookie. A partir de ahí, `/auth/refresh` responde 401.
+
+### Dónde va cada token
+
+El access token se devuelve en el JSON y el frontend lo guarda **solo en memoria**. El refresh token
+viaja en la cookie `refreshToken`, que pone el backend con `res.cookie` en el login:
+
+| Atributo | Para qué |
+|---|---|
+| `HttpOnly` | JavaScript no puede leerla (`document.cookie` no la muestra). Un script inyectado por XSS no se la puede llevar |
+| `SameSite=Strict` | El navegador no la envía en peticiones que provoca otra web (CSRF) |
+| `Path=/auth` | Solo se envía a `/auth/refresh` y `/auth/logout`, que son las únicas rutas que la necesitan |
+| `Max-Age` | Dura lo mismo que el refresh token (`JWT_REFRESH_EXPIRES_IN`) |
+| `Secure` | Solo por HTTPS. Se activa con `NODE_ENV=production`; en clase va por `http://localhost` |
+
+Para que el navegador envíe y acepte la cookie entre `localhost:4200` y `localhost:1337`, el frontend
+llama a `/auth/*` con `withCredentials: true` y CORS responde con `credentials: true` y el origen
+exacto de `CORS_ORIGIN` (con credenciales, `*` no está permitido). La cookie la lee `cookie-parser`,
+que la deja en `req.cookies`.
 
 401 y 403 no son lo mismo: 401 es "no sé quién eres" (no hay sesión válida) y 403 es "sé quién eres,
 pero no tienes permiso".
@@ -285,7 +306,7 @@ si su petición estaba bien formada.
 
 | Rutas | Quién puede |
 |---|---|
-| `/auth/register`, `/auth/login`, `/auth/refresh` | Cualquiera (refresh necesita un refresh token válido) |
+| `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` | Cualquiera (refresh necesita la cookie con un refresh token válido) |
 | `/ping`, `/api-docs` | Cualquiera |
 | `/users`, `/users/me` y el chat | Cualquier usuario con sesión |
 | `/authors`, `/books` (todas sus operaciones) | Solo `admin` |
@@ -296,16 +317,19 @@ Decisiones y límites, porque es un proyecto de clase:
   como access token, ni al revés.
 - Los refresh tokens **no se guardan** en la base de datos. Es lo más sencillo, pero tiene un coste:
   el servidor no puede invalidar un refresh token antes de que caduque, y cerrar sesión consiste en
-  que el frontend borre sus tokens.
+  borrar la cookie (`/auth/logout`) y que el frontend olvide el access token que tiene en memoria.
 - Al renovar, el servidor vuelve a leer el usuario de la base de datos: si le han cambiado el rol, el
   token nuevo ya lleva el rol actual; si se ha borrado, responde 401.
 
 Para probarlo con curl:
 
 ```
-curl -X POST http://localhost:1337/auth/login -H "Content-Type: application/json" -d '{"email":"admin@example.com","password":"seminari7"}'
+curl -c cookies.txt -X POST http://localhost:1337/auth/login -H "Content-Type: application/json" -d '{"email":"admin@example.com","password":"seminari7"}'
 curl http://localhost:1337/authors -H "Authorization: Bearer <el token de la respuesta anterior>"
+curl -b cookies.txt -X POST http://localhost:1337/auth/refresh
 ```
+
+`-c` guarda la cookie que deja el login y `-b` la envía en el refresh. Sin `-b`, el refresh responde 401.
 
 ## Chat (WebSockets)
 
@@ -326,8 +350,15 @@ con `on`.
 | `chat:message` | Servidor, a toda la sala | Un mensaje | Le llega a todos los que están en la sala, también a quien lo escribió |
 | `chat:error` | Servidor, a un cliente | `{ message }` | Algo no se ha podido hacer (sala no permitida, mensaje vacío...) |
 | `users:online` | Servidor, a todos | Lista de ids | Quién tiene el chat abierto. Se envía cada vez que alguien entra o sale |
+| `books:changed` | Servidor, a todos | `{ action, id, name, userId }` | Un admin ha creado, editado o borrado un libro (`action` es `created`, `updated` o `deleted`) |
+| `authors:changed` | Servidor, a todos | `{ action, id, name, userId }` | Lo mismo con un autor |
 
 Un mensaje del servidor tiene esta forma: `{ _id, room, user: { _id, name }, text, timestamp }`.
+
+Los dos últimos eventos **no son chat**: son avisos del backoffice. Los emiten los controllers de
+libros y autores después de responder la petición HTTP, a través de `src/sockets/Notifications.ts`,
+con `io.emit` (a todos los conectados, no a una sala). El cliente solo escucha; el chat los enseña en
+la franja "Avisos del backoffice".
 
 El recorrido de un mensaje:
 
@@ -371,8 +402,9 @@ estas rutas: va por WebSocket (ver [Chat](#chat-websockets)).
 |---|---|---|---|
 | GET | `/ping` | Comprueba que la API está viva | |
 | POST | `/auth/register` | Registra un usuario (rol `user`). No devuelve token | `{ "name": "...", "email": "...", "password": "..." }` |
-| POST | `/auth/login` | Inicia sesión: devuelve `{ token, refreshToken, user }` | `{ "email": "...", "password": "..." }` |
-| POST | `/auth/refresh` | Devuelve un access token nuevo: `{ token }` | `{ "refreshToken": "..." }` |
+| POST | `/auth/login` | Inicia sesión: devuelve `{ token, user }` y deja el refresh token en una cookie HttpOnly | `{ "email": "...", "password": "..." }` |
+| POST | `/auth/refresh` | Devuelve un access token nuevo: `{ token }`. Lee el refresh token de la cookie | |
+| POST | `/auth/logout` | Borra la cookie del refresh token (204) | |
 | GET | `/users` | Lista los usuarios (`_id` y `name`) para el chat directo. Cualquier usuario con sesión | |
 | GET | `/users/me` | Devuelve el usuario con sesión (`_id`, `name`, `email`, `role`). Lo saca de `req.user` | |
 | POST | `/authors` | Crea un autor | `{ "name": "...", "email": "..." }` |
