@@ -70,6 +70,19 @@ export interface ClientToServerEvents {
     'chat:message': (payload: ChatMessagePayload) => void;
 }
 
+// ---- Eventos que no son del chat: avisos del backoffice ----
+
+// Aviso de que un admin ha creado, editado o borrado un libro o un autor.
+// Lo envía el servidor a todos los conectados (ver sockets/Notifications.ts).
+export interface BackofficeChange {
+    action: 'created' | 'updated' | 'deleted';
+    // Id y nombre (título del libro o nombre del autor) de lo que ha cambiado
+    id: string;
+    name: string;
+    // Id del usuario que lo ha hecho, sacado del token
+    userId: string;
+}
+
 // Eventos que el servidor envía al cliente (socket.emit aquí, socket.on en el frontend).
 export interface ServerToClientEvents {
     'chat:history': (messages: ChatMessage[]) => void;
@@ -77,6 +90,9 @@ export interface ServerToClientEvents {
     'chat:error': (error: ChatError) => void;
     // Lista de ids de los usuarios con el chat abierto; se envía a todos cada vez que alguien entra o sale
     'users:online': (userIds: string[]) => void;
+    // Avisos del backoffice: a todos los conectados, cada vez que cambia un libro o un autor
+    'books:changed': (change: BackofficeChange) => void;
+    'authors:changed': (change: BackofficeChange) => void;
 }
 
 // Lo que el middleware SocketAuth guarda en cada conexión (socket.data).

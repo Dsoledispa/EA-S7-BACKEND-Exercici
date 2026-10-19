@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import AuthorService from '../services/AuthorService';
 import type { PaginationQuery } from '../middleware/Joi';
+import { notifyAuthorsChanged } from '../sockets/Notifications';
 
 // Función para crear un autor nuevo
 // Cogemos los datos que nos llegan en el body y se los pasamos al servicio
@@ -11,6 +12,9 @@ const createAuthor = async (req: Request, res: Response, next: NextFunction) => 
         // Si se ha creado correctamente devolvemos el autor creado
         // El codigo 201 indica que se ha creado un recurso nuevo
         res.status(201).json({ author });
+
+        // Avisamos por socket.io a los usuarios conectados (req.user lo dejo VerifyToken)
+        notifyAuthorsChanged({ action: 'created', id: String(author._id), name: author.name, userId: req.user!.id });
     } catch (error) {
         // Si ocurre algun error lo pasamos al siguiente middleware
         // para que se encargue de gestionarlo
@@ -69,6 +73,9 @@ const updateAuthor = async (req: Request<{ authorId: string }>, res: Response, n
         if (author) {
             // Si todo ha ido bien devolvemos el autor actualizado
             res.status(200).json({ author });
+
+            // Avisamos por socket.io del cambio
+            notifyAuthorsChanged({ action: 'updated', id: String(author._id), name: author.name, userId: req.user!.id });
         } else {
             // Si no existe el autor devolvemos un error 404
             res.status(404).json({ message: 'not found' });
@@ -94,6 +101,9 @@ const deleteAuthor = async (req: Request<{ authorId: string }>, res: Response, n
             // Este codigo indica que la petición se ha realizado correctamente
             // pero no hay contenido que devolver
             res.status(204).send();
+
+            // Avisamos por socket.io del borrado
+            notifyAuthorsChanged({ action: 'deleted', id: String(author._id), name: author.name, userId: req.user!.id });
         } else {
             // Si no encontramos el autor devolvemos un error 404
             res.status(404).json({ message: 'not found' });

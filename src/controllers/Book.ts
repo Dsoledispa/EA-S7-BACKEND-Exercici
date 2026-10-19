@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import BookService from '../services/BookService';
 import type { PaginationQuery } from '../middleware/Joi';
+import { notifyBooksChanged } from '../sockets/Notifications';
 
 // Función para crear un libro nuevo
 // Cogemos los datos que llegan en el body y los pasamos al servicio
@@ -11,6 +12,9 @@ const createBook = async (req: Request, res: Response, next: NextFunction) => {
         // Si se ha creado correctamente devolvemos el libro creado
         // El codigo 201 indica que se ha creado un recurso nuevo
         res.status(201).json({ book });
+
+        // Avisamos por socket.io a los usuarios conectados (req.user lo dejo VerifyToken)
+        notifyBooksChanged({ action: 'created', id: String(book._id), name: book.title, userId: req.user!.id });
     } catch (error) {
         // Si ocurre algun error lo pasamos al siguiente middleware
         next(error);
@@ -68,6 +72,9 @@ const updateBook = async (req: Request<{ bookId: string }>, res: Response, next:
         if (book) {
             // Si todo ha ido bien devolvemos el libro actualizado
             res.status(200).json({ book });
+
+            // Avisamos por socket.io del cambio
+            notifyBooksChanged({ action: 'updated', id: String(book._id), name: book.title, userId: req.user!.id });
         } else {
             // Si no existe el libro devolvemos un error 404
             res.status(404).json({ message: 'not found' });
@@ -93,6 +100,9 @@ const deleteBook = async (req: Request<{ bookId: string }>, res: Response, next:
             // Este codigo indica que la petición se ha realizado correctamente
             // pero no hay contenido que devolver
             res.status(204).send();
+
+            // Avisamos por socket.io del borrado
+            notifyBooksChanged({ action: 'deleted', id: String(book._id), name: book.title, userId: req.user!.id });
         } else {
             // Si no encontramos el libro devolvemos un error 404
             res.status(404).json({ message: 'not found' });
