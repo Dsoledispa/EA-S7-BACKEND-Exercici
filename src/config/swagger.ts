@@ -13,7 +13,6 @@ const { swagger: authorInput } = j2s(Schemas.author.create);
 const { swagger: bookInput } = j2s(Schemas.book.create);
 const { swagger: registerInput } = j2s(Schemas.auth.register);
 const { swagger: loginInput } = j2s(Schemas.auth.login);
-const { swagger: refreshInput } = j2s(Schemas.auth.refresh);
 
 // Lo que devuelve la API no es igual a lo que se envía: lleva el _id y las fechas que
 // pone MongoDB, el usuario nunca devuelve la contraseña, y el libro trae sus autores enteros.
@@ -114,7 +113,7 @@ const swaggerDocument = swaggerJsdoc({
         servers: [{ url: `http://localhost:${config.server.port}` }],
         tags: [
             { name: 'Health', description: 'Comprobar que la API responde' },
-            { name: 'Auth', description: 'Registro, login y renovación del token' },
+            { name: 'Auth', description: 'Registro, login, renovación del token y logout' },
             { name: 'Users', description: 'Usuarios, para elegir con quién hablar en el chat' },
             { name: 'Authors', description: 'Autores' },
             { name: 'Books', description: 'Libros' }
@@ -126,12 +125,14 @@ const swaggerDocument = swaggerJsdoc({
             // Cómo se envía el token: en la cabecera Authorization: Bearer <token>.
             // En la página de Swagger se pega con el botón Authorize.
             securitySchemes: {
-                bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }
+                bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+                // El refresh token va en una cookie HttpOnly que deja el login; la usan /auth/refresh y /auth/logout.
+                // Desde la propia página de Swagger funciona sola, porque el navegador la envía.
+                refreshCookie: { type: 'apiKey', in: 'cookie', name: 'refreshToken' }
             },
             schemas: {
                 RegisterInput: registerInput,
                 LoginInput: loginInput,
-                RefreshInput: refreshInput,
                 User: userSchema,
                 AuthorInput: authorInput,
                 BookInput: bookInput,
@@ -140,16 +141,15 @@ const swaggerDocument = swaggerJsdoc({
             },
             responses: {
                 LoginOk: okResponse(
-                    'Sesión iniciada: el access token, el refresh token y el usuario',
+                    'Sesión iniciada: el access token y el usuario (el refresh token va en la cookie)',
                     {
                         type: 'object',
                         properties: {
                             token: { type: 'string' },
-                            refreshToken: { type: 'string' },
                             user: userSchema
                         }
                     },
-                    { token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...', refreshToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...', user: userExample }
+                    { token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...', user: userExample }
                 ),
                 BadCredentials: errorResponse('El email o la contraseña no son correctos', 'Email o contraseña incorrectos'),
                 Unauthorized: errorResponse('Falta el token, ha caducado o no es válido', 'El token ha caducado'),

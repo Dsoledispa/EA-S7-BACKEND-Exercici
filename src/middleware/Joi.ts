@@ -76,12 +76,9 @@ export const Schemas = {
         login: Joi.object<IUser>({
             email: Joi.string().email().required().example('admin@example.com'),
             password: Joi.string().required().example('seminari7')
-        }),
-
-        // Refresh: el refresh token que se recibio al hacer login
-        refresh: Joi.object<{ refreshToken: string }>({
-            refreshToken: Joi.string().required()
         })
+
+        // Refresh y logout no tienen esquema: no llevan body, el refresh token va en una cookie
     },
 
     // Validaciones relacionadas con los autores

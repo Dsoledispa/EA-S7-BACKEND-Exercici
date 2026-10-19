@@ -17,9 +17,15 @@ const required = (name: string) => {
 
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/seminari7';
 
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+// Origen exacto del frontend. Como el refresh token va en una cookie, CORS tiene que aceptar
+// credenciales y con credenciales no se puede usar '*'.
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:4200';
 
 const SERVER_PORT = process.env.SERVER_PORT ? Number(process.env.SERVER_PORT) : 1337;
+
+// En produccion la cookie del refresh token se marca como Secure (solo viaja por HTTPS).
+// En desarrollo no, porque el frontend va por http://localhost.
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 // Secretos con los que se firman los tokens. Son dos distintos para que un refresh token
 // no sirva como access token ni al revés.
@@ -36,7 +42,8 @@ export const config = {
         url: MONGO_URL
     },
     server: {
-        port: SERVER_PORT
+        port: SERVER_PORT,
+        isProduction: IS_PRODUCTION
     },
     cors: {
         origin: CORS_ORIGIN
